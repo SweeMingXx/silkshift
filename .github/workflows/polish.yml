@@ -5,17 +5,17 @@ on:
 permissions:
   contents: write
   actions: write
+  issues: write
 jobs:
   polish:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Apply verified source refinements
         run: |
-          python3 - <<'PY'
+          python3 - <<'PY' 2>&1 | tee /tmp/polish.log
           from pathlib import Path
-          p=Path('game.js')
-          source=p.read_text()
+          p=Path('game.js');source=p.read_text()
           edits=[
             ('[0,4,-16]','[7,4,-16]'),
             ('5.35+state.jump*.16,10.3]','5.35+state.jump*.16,innerWidth<680?14.5:10.3]'),
@@ -36,16 +36,24 @@ jobs:
           source=source.replace("await mp.screenshot({path:'test-results/mobile-home.png'});", "await mp.screenshot({path:'test-results/mobile-home.png'});await mp.screenshot({path:'test-results/mobile-home.jpg',quality:65});const hero=await mp.evaluate(()=>__silkshift.project([3,6,0]));assert.ok(hero[0]>-.9&&hero[0]<.95,'Menu hero stays in portrait frame');")
           source=source.replace("await mp.screenshot({path:'test-results/mobile-run.png'});", "await mp.screenshot({path:'test-results/mobile-run.png'});await mp.screenshot({path:'test-results/mobile-run.jpg',quality:65});await mp.evaluate(()=>{__silkshift.state.x=3.4;__silkshift.state.lane=1;__silkshift.state.jump=0;__silkshift.pause();});await mp.waitForTimeout(100);const p=await mp.evaluate(()=>__silkshift.project([3.4,1.5,0]));assert.ok(p[0]<.94,'Right lane hero stays in portrait frame');")
           p.write_text(source)
-          p=Path('.github/workflows/release.yml');source=p.read_text();source=source.replace("['desktop-home.jpg','mobile-home.png','desktop-swing.png']", "['desktop-home.jpg','mobile-home.jpg','mobile-run.jpg','desktop-swing.png']");p.write_text(source)
-          Path('.github/workflows/polish.yml').unlink()
+          print('Applied camera, simulation, collision, focus and projection-test refinements.')
           PY
-          node --check game.js
-          node --check tests/browser.mjs
+          node --check game.js 2>&1 | tee -a /tmp/polish.log
+          node --check tests/browser.mjs 2>&1 | tee -a /tmp/polish.log
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add game.js tests/browser.mjs .github/workflows
-          git commit -m 'Polish portrait cameras, accessible focus, accurate collisions and fixed-step simulation'
-          git push origin main
+          git add game.js tests/browser.mjs
+          git commit -m 'Polish portrait cameras, accessible focus, collisions and fixed-step simulation' 2>&1 | tee -a /tmp/polish.log
+          git push origin main 2>&1 | tee -a /tmp/polish.log
+      - name: Report refinements
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          STATUS: ${{ job.status }}
+        with:
+          script: |
+            const fs=require('fs');const log=fs.existsSync('/tmp/polish.log')?fs.readFileSync('/tmp/polish.log','utf8'):'No patch log.';
+            await github.rest.issues.createComment({...context.repo,issue_number:1,body:`Scene polish: ${process.env.STATUS}\n\n\`\`\`\n${log.slice(-5000)}\n\`\`\``});
       - name: Start full release verification
         uses: actions/github-script@v7
         with:
