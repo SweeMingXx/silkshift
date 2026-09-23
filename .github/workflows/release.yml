@@ -1,0 +1,91 @@
+name: Verify and deploy SILKSHIFT
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+  issues: write
+concurrency:
+  group: silkshift-pages
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Restore test dependencies
+        run: npm install --no-audit --no-fund
+      - name: Check source syntax
+        run: npm run check
+      - name: Install test browser
+        run: npx playwright install --with-deps chromium
+      - name: Browser integration tests
+        run: |
+          python3 -m http.server 8080 > /tmp/silkshift-http.log 2>&1 &
+          for i in {1..15}; do curl -fsS http://127.0.0.1:8080/ > /dev/null && break || sleep 1; done
+          npm test
+      - name: Publish QA report
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs=require('fs');
+            const p='test-results/report.json';
+            const r=fs.existsSync(p)?JSON.parse(fs.readFileSync(p,'utf8')):null;
+            const rows=r?r.results.map(t=>`${t.passed?'✅':'❌'} ${t.name}${t.error?'\n```\n'+t.error.slice(0,2200)+'\n```':''}`).join('\n'):'Tests did not reach the reporting stage; inspect the workflow logs.';
+            await github.rest.issues.createComment({...context.repo,issue_number:1,body:`## Browser verification\nCommit: ${context.sha}\n${rows}\n\n[Workflow and screenshots](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`});
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-qa
+          path: test-results
+      - name: Package static site
+        run: |
+          mkdir -p _site
+          cp index.html style.css game.js icon.svg .nojekyll _site/
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+  deploy:
+    needs: verify
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+      - name: Deploy website
+        id: deploy
+        uses: actions/deploy-pages@v4
+      - name: Verify public deployment
+        env:
+          SITE: ${{ steps.deploy.outputs.page_url }}
+        run: |
+          for i in {1..18}; do
+            if curl -fsSL "$SITE" -o /tmp/live.html && grep -q 'OWN THE' /tmp/live.html; then
+              curl -fsSL "${SITE}game.js" | grep -q 'drawHero'
+              curl -fsSL "${SITE}style.css" | grep -q 'hero-copy'
+              echo "Verified live: $SITE"
+              exit 0
+            fi
+            sleep 10
+          done
+          exit 1
+      - name: Publish deployment outcome
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          DEPLOY_STATUS: ${{ job.status }}
+          SITE: ${{ steps.deploy.outputs.page_url }}
+        with:
+          script: |
+            await github.rest.issues.createComment({...context.repo,issue_number:1,body:`## Live deployment: ${process.env.DEPLOY_STATUS}\nURL: ${process.env.SITE||'Not yet deployed'}\nCommit: ${context.sha}\n[Workflow](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`});
