@@ -1,0 +1,77 @@
+name: Deploy approved gh-pages release
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+  issues: write
+concurrency:
+  group: silkshift-live
+  cancel-in-progress: false
+jobs:
+  package:
+    if: github.ref == 'refs/heads/gh-pages'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Package static site
+        run: |
+          mkdir -p _site
+          cp index.html style.css game.js icon.svg .nojekyll _site/
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+  deploy:
+    needs: package
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@v5
+      - name: Deploy website
+        id: deploy
+        uses: actions/deploy-pages@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify public files
+        env:
+          SITE: ${{ steps.deploy.outputs.page_url }}
+        run: |
+          for i in {1..18}; do
+            if curl -fsSL "$SITE" -o /tmp/live.html && grep -q 'OWN THE' /tmp/live.html; then
+              curl -fsSL "${SITE}game.js" -o /tmp/live-game.js
+              cmp game.js /tmp/live-game.js
+              echo "Verified live content matches the release: $SITE"
+              exit 0
+            fi
+            sleep 10
+          done
+          exit 1
+      - name: Browser-test actual public URL
+        env:
+          SITE_URL: ${{ steps.deploy.outputs.page_url }}
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+          npm test
+      - name: Publish deployment outcome
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          DEPLOY_STATUS: ${{ job.status }}
+          SITE: ${{ steps.deploy.outputs.page_url }}
+        with:
+          script: |
+            const fs=require('fs');const p='test-results/report.json';
+            const report=fs.existsSync(p)?JSON.parse(fs.readFileSync(p,'utf8')):null;
+            const tests=report?report.results.map(t=>`${t.passed?'✅':'❌'} ${t.name}${t.error?'\n```\n'+t.error.slice(0,2000)+'\n```':''}`).join('\n'):'Live browser test did not run.';
+            await github.rest.issues.createComment({...context.repo,issue_number:1,body:`## Live deployment: ${process.env.DEPLOY_STATUS}\nURL: ${process.env.SITE||'Not yet deployed'}\nCommit: ${context.sha}\n\n${tests}\n\n[Workflow](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`});
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live-browser-qa
+          path: test-results

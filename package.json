@@ -1,0 +1,1 @@
+{"name":"silkshift","version":"1.0.0","private":true,"description":"Original native-WebGL city runner","scripts":{"test":"node tests/browser.mjs","check":"node --check game.js"},"devDependencies":{"playwright":"1.51.1"}}
